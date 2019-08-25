@@ -29,18 +29,8 @@ namespace CardDispenserServiceNs
         public Command Command
         {
             get => _command;
-            private set
-            {
-                if (_command != null)
-                {
-                    if((_command is HighClassStatusCheckingCommand) == false)
-                        PrevCommand = _command;
-                }
-
-                _command = value;
-            }
+            private set => _command = value;
         }
-        public Command PrevCommand { get; private set; }
 
         public State State { get; set; }
 
@@ -134,6 +124,12 @@ namespace CardDispenserServiceNs
             _taskCompletionSource = new TaskCompletionSource<bool>();
             _isWaitingCardEmptySensorStatus = true;
             return _taskCompletionSource.Task;
+        }
+
+        public void CancelCapture()
+        {
+            _isWaitingFull = false;
+            _taskCompletionSource.SetResult(true);
         }
 
         public void Connect()
@@ -291,11 +287,6 @@ namespace CardDispenserServiceNs
         public void Send(Command command)
         {
             _port.Write(command.Bytes, 0, command.Bytes.Length);
-        }
-
-        public void Abort()
-        {
-            _isAborted = true;
         }
 
         public async Task Start(CardDispenserSettings settings)

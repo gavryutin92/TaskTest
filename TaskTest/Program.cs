@@ -11,10 +11,11 @@ namespace TaskTest
         {
             var disp = new CardDispenserService();
             Task.Run(() => disp.MainLoop());
-            //var res = await disp.CaptureCardToRead();
+            Task.Run( async () => { await Task.Delay(3000); disp.CancelCapture();});
+            var res = await disp.CaptureCardToRead();
             //var res = await disp.DispenseCardToExit();
             //var res = await disp.DispenseCardToRead();
-            var res = await disp.GetCardEmptySensorStatus();
+            //var res = await disp.GetCardEmptySensorStatus();
             Console.ReadLine();
         }
     }
