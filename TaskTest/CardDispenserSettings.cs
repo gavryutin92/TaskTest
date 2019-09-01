@@ -23,5 +23,6 @@ namespace CardDispenserServiceNs
         /// </summary>
         public int ResponseTimeout { get; set; } = 2000;
         public int ReadWriteTimeout { get; set; } = 1000;
+        public bool IsFatal { get; internal set; }
     }
 }

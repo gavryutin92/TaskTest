@@ -91,9 +91,9 @@ namespace CardDispenserServiceNs
         void OnExceptionHasCome(Exception e)
         {
             _log.Error(e);
-            _isConnected = false;
             _isException = true;
             ExceptionHasCome?.Invoke(this, e);
+            State = State.NoConnect;
         }
 
         public Task<bool> CaptureCardToRead()
@@ -142,15 +142,21 @@ namespace CardDispenserServiceNs
 
         public void CancelCapture()
         {
-            _isWaitingFull = false;
-            _taskCompletionSource.SetResult(true);
+            Status = CardDispenserStatus.Idle;
+            _taskCompletionSource.SetResult(false);
         }
 
         public Task<bool> SpitCard()
         {
+            if (Status != CardDispenserStatus.Idle)
+                return Task.FromResult(false);
+
+            if(!CardAtReadingPosition)
+                return Task.FromResult(true);
+
             _taskCompletionSource = new TaskCompletionSource<bool>();
-            _isWaitingEmpty = true;
             Command = new DispenseCartToSpitPosCommand();
+            Status = CardDispenserStatus.SpitCardWaiting;
             return _taskCompletionSource.Task;
         }
 
@@ -180,6 +186,7 @@ namespace CardDispenserServiceNs
         {
             if (resp.HasFlag(ApStatusEnum.CaptSensor1Status))
             {
+                CardAtReadingPosition = true;
                 if (Status == CardDispenserStatus.CapturingToRead   || 
                     Status == CardDispenserStatus.DispensingToRead)
                 {
@@ -196,19 +203,26 @@ namespace CardDispenserServiceNs
                     if ((DateTime.Now - _startTakeCardTime).TotalMilliseconds > 15000)
                     {
                         _startTakeCardTime = DateTime.MaxValue;
-                        Status = CardDispenserStatus.Idle;
                         await CaptureToError();
+                        Status = CardDispenserStatus.Idle;
                         _taskCompletionSource.SetResult(true);
                     }
                 }
             }
             else
             {
-                if(Status == CardDispenserStatus.TakeCardWaiting)
+                CardAtReadingPosition = false;
+                if (Status == CardDispenserStatus.TakeCardWaiting)
                 {
                     _startTakeCardTime = DateTime.MaxValue;
-                    Status = CardDispenserStatus.Idle;
                     await ProhibitCapture();
+                    Status = CardDispenserStatus.Idle;
+                    _taskCompletionSource.SetResult(true);
+                }
+                else if(Status == CardDispenserStatus.SpitCardWaiting)
+                {
+                    await ProhibitCapture();
+                    Status = CardDispenserStatus.Idle;
                     _taskCompletionSource.SetResult(true);
                 }
             }
@@ -227,8 +241,8 @@ namespace CardDispenserServiceNs
         {
             if (Status == CardDispenserStatus.DispenserStatusWaiting)
             {
-                _taskCompletionSource.SetResult(true);
                 Status = CardDispenserStatus.Idle;
+                _taskCompletionSource.SetResult(true);
             }
         }
 
@@ -269,45 +283,49 @@ namespace CardDispenserServiceNs
 
         private List<ApStatusEnum> _errorsFlags = new List<ApStatusEnum>();
 
-        private void HandleErrors(ApStatusEnum resp)
+        private async Task HandleErrors(ApStatusEnum resp)
         {
-            if (resp.HasFlag(ApStatusEnum.FailureAlarmSensorInvalid))
+            await HandleErrorFlag(resp, ApStatusEnum.FailureAlarmSensorInvalid);
+            await HandleErrorFlag(resp, ApStatusEnum.ErrorCardBinIsFull);
+            await HandleErrorFlag(resp, ApStatusEnum.CardEmptySensorStatus);
+            await HandleErrorFlag(resp, ApStatusEnum.CardDispenseError);
+            await HandleErrorFlag(resp, ApStatusEnum.NoCapture);
+            await HandleErrorFlag(resp, ApStatusEnum.CardOverlapped);
+            await HandleErrorFlag(resp, ApStatusEnum.CardJam);
+        }
+
+        private async Task HandleErrorFlag(ApStatusEnum resp, ApStatusEnum flag)
+        {
+            if (resp.HasFlag(flag))
             {
-                OnError(ApStatusEnum.FailureAlarmSensorInvalid);
+                await OnError(flag);
             }
-            if (resp.HasFlag(ApStatusEnum.ErrorCardBinIsFull))
+            else
             {
-                OnError(ApStatusEnum.ErrorCardBinIsFull);
-            }
-            if (resp.HasFlag(ApStatusEnum.CardEmptySensorStatus))
-            {
-                OnError(ApStatusEnum.CardEmptySensorStatus);
-            }
-            if (resp.HasFlag(ApStatusEnum.CardDispenseError))
-            {
-                OnError(ApStatusEnum.CardDispenseError);
-            }
-            if (resp.HasFlag(ApStatusEnum.NoCapture))
-            {
-                OnError(ApStatusEnum.NoCapture);
-            }
-            if (resp.HasFlag(ApStatusEnum.CardOverlapped))
-            {
-                OnError(ApStatusEnum.CardOverlapped);
-            }
-            if (resp.HasFlag(ApStatusEnum.CardJam))
-            {
-                OnError(ApStatusEnum.CardJam);
+                RemoveError(flag);
             }
         }
 
-        private void OnError(ApStatusEnum status)
+        private void RemoveError(ApStatusEnum status)
         {
-            _log.Error(status.ToString());
-            if (!_errorsFlags.Contains(status))
+            _errorsFlags.Remove(status);
+        }
+
+        private async Task OnError(ApStatusEnum status)
+        {
+            await Reset();
+            if (_settings.IsFatal)
             {
-                _errorsFlags.Add(status);
-                MessageHasCome?.Invoke(this, new MessageHasComeEventArgs(MessageType.Error, status.ToString()));
+                _log.Error($"DISPENSER ERROR FLAG: {status}");
+                if (!_errorsFlags.Contains(status))
+                {
+                    _errorsFlags.Add(status);
+                    MessageHasCome?.Invoke(this, new MessageHasComeEventArgs(MessageType.Error, status.ToString()));
+                }
+            }
+            else
+            {
+                OnExceptionHasCome(new Exception($"DISPENSER ERROR FLAG: {status}"));
             }
         }
 
@@ -333,8 +351,7 @@ namespace CardDispenserServiceNs
                 }
                 catch (Exception e)
                 {
-                    _log.Error(e);
-                    State = State.NoConnect;
+                    OnExceptionHasCome(e);
                     await Task.Delay(5000);
                 }
             }
@@ -345,6 +362,7 @@ namespace CardDispenserServiceNs
             if (State == State.NoConnect)
             {
                 Connect();
+                OnExceptionHasOut();
                 State = State.WaitingCommand;
             }
             else if (State == State.WaitingCommand)

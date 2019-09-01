@@ -18,7 +18,8 @@ namespace CardDispenserServiceNs
         CapturingToRead,
         TakeCardWaiting,
         ReadCardWaiting,
-        DispenserStatusWaiting
+        DispenserStatusWaiting,
+        SpitCardWaiting
     }
 
     public interface ICardDispenserService
