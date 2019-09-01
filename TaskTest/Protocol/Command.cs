@@ -67,9 +67,9 @@ namespace CardDispenserServiceNs.Protocol
         public HighClassStatusCheckingCommand() : base('A', 'P') { }
     }
 
-    public class ResetMessage : Command
+    public class ResetCommand : Command
     {
-        public ResetMessage() : base('R', 'S') { }
+        public ResetCommand() : base('R', 'S') { }
     }
 
     public class CartToPositionCommand : Command

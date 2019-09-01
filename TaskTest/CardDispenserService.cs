@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.IO.Ports;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using CardDispenserServiceNs.Events;
 
@@ -25,14 +26,29 @@ namespace CardDispenserServiceNs
     public class CardDispenserService //: ICardDispenserService
     {
         private Command _command;
+        private object _lockObj = new object();
 
         public Command Command
         {
             get => _command;
-            private set => _command = value;
+            private set => Interlocked.Exchange(ref _command, value);
         }
 
         public State State { get; set; }
+
+        public CardDispenserStatus StatusPrev { get; private set; }
+
+        private CardDispenserStatus _status;
+        public CardDispenserStatus Status
+        {
+            get => _status;
+            set
+            {
+                StatusPrev = _status;
+                _status = value;
+                StatusChanged?.Invoke(Status);
+            }
+        }
 
         private static readonly Logger _log = LogManager.GetCurrentClassLogger();
 
@@ -44,9 +60,6 @@ namespace CardDispenserServiceNs
         private volatile bool _isWaitingEmpty;
         private volatile bool _isAborted = false;
         public bool CardAtReadingPosition { get; private set; }
-        private volatile bool _isWaitingAskNak;
-        private volatile bool _isWaitingCardEmptySensorStatus;
-        private bool _haveCardInWork = true;
 
         private TaskCompletionSource<bool> _taskCompletionSource;
         private DateTime _startTakeCardTime = DateTime.MaxValue;
@@ -58,16 +71,6 @@ namespace CardDispenserServiceNs
 
         private CardDispenserSettings _settings;
 
-        private CardDispenserStatus _status;
-        public CardDispenserStatus Status
-        {
-            get => _status;
-            set
-            {
-                _status = value;
-                StatusChanged?.Invoke(Status);
-            }
-        }
 
         public bool IsEmpty { get; private set; }
 
@@ -95,34 +98,45 @@ namespace CardDispenserServiceNs
 
         public Task<bool> CaptureCardToRead()
         {
+            if (Status != CardDispenserStatus.Idle)
+                return Task.FromResult(false);
+
             _taskCompletionSource = new TaskCompletionSource<bool>();
-            _isWaitingFull = true;
             Command = new ReadCapturePolicyCommand();
+            Status = CardDispenserStatus.CapturingToRead;
             return _taskCompletionSource.Task;
         }
 
         public Task<bool> DispenseCardToExit()
         {
+            if (Status != CardDispenserStatus.Idle)
+                return Task.FromResult(false);
+
             _startTakeCardTime = DateTime.Now;
             _taskCompletionSource = new TaskCompletionSource<bool>();
-            _isWaitingEmpty = true;
-            Status = CardDispenserStatus.TakeCardWaiting;
             Command = new DispenseCardToExitPosCommand();
+            Status = CardDispenserStatus.DispensingToExit;
             return _taskCompletionSource.Task;
         }
 
         public Task<bool> DispenseCardToRead()
         {
+            if (Status != CardDispenserStatus.Idle)
+                return Task.FromResult(false);
+
             _taskCompletionSource = new TaskCompletionSource<bool>();
-            _isWaitingFull = true;
             Command = new DispenseCardToReadPosCommand();
+            Status = CardDispenserStatus.DispensingToRead;
             return _taskCompletionSource.Task;
         }
 
-        public Task<bool> GetCardEmptySensorStatus()
+        public Task<bool> GetStatus()
         {
+            if (Status != CardDispenserStatus.Idle)
+                return Task.FromResult(false);
+
             _taskCompletionSource = new TaskCompletionSource<bool>();
-            _isWaitingCardEmptySensorStatus = true;
+            Status = CardDispenserStatus.DispenserStatusWaiting;
             return _taskCompletionSource.Task;
         }
 
@@ -130,6 +144,14 @@ namespace CardDispenserServiceNs
         {
             _isWaitingFull = false;
             _taskCompletionSource.SetResult(true);
+        }
+
+        public Task<bool> SpitCard()
+        {
+            _taskCompletionSource = new TaskCompletionSource<bool>();
+            _isWaitingEmpty = true;
+            Command = new DispenseCartToSpitPosCommand();
+            return _taskCompletionSource.Task;
         }
 
         public void Connect()
@@ -142,7 +164,7 @@ namespace CardDispenserServiceNs
             //_port.StopBits = _settings.StopBits;
             //_port.ReadTimeout = _settings.ReadWriteTimeout;
             //_port.WriteTimeout = _settings.ReadWriteTimeout;
-            _port = new SerialPort("COM1");
+            _port = new SerialPort("COM8");
             _port.BaudRate = 9600;
             _port.Parity = Parity.None;
             _port.DataBits = 8;
@@ -154,62 +176,65 @@ namespace CardDispenserServiceNs
             _port.Open();
         }
 
-        private void HandleSensor1Status(ApStatusEnum resp)
+        private async Task HandleSensor1Status(ApStatusEnum resp)
         {
             if (resp.HasFlag(ApStatusEnum.CaptSensor1Status))
             {
-                CardAtReadingPosition = true;
-                if (_isWaitingFull)
+                if (Status == CardDispenserStatus.CapturingToRead   || 
+                    Status == CardDispenserStatus.DispensingToRead)
                 {
-                    _isWaitingFull = false;
+                    Status = CardDispenserStatus.ReadCardWaiting;
                     _taskCompletionSource.SetResult(true);
+                }
+                else if (Status == CardDispenserStatus.DispensingToExit)
+                {
+                    _startTakeCardTime = DateTime.Now;
+                    Status = CardDispenserStatus.TakeCardWaiting;
+                }
+                else if(Status == CardDispenserStatus.TakeCardWaiting)
+                {
+                    if ((DateTime.Now - _startTakeCardTime).TotalMilliseconds > 15000)
+                    {
+                        _startTakeCardTime = DateTime.MaxValue;
+                        Status = CardDispenserStatus.Idle;
+                        await CaptureToError();
+                        _taskCompletionSource.SetResult(true);
+                    }
                 }
             }
             else
             {
-                CardAtReadingPosition = false;
-                if (_isWaitingEmpty)
+                if(Status == CardDispenserStatus.TakeCardWaiting)
                 {
-                    _isWaitingEmpty = false;
-                    Status = CardDispenserStatus.DispensingToExit;
+                    _startTakeCardTime = DateTime.MaxValue;
+                    Status = CardDispenserStatus.Idle;
+                    await ProhibitCapture();
+                    _taskCompletionSource.SetResult(true);
                 }
             }
         }
 
-        private void HandleResponse(string mes)
+        private async Task HandleResponse(string mes)
         {
             var resp = ApResponse.Parse(mes);
             HandleErrors(resp);
-            HandleWarnings(resp);
-            HandleCardEmptySensorStatus(resp);
-            HandleSensor1Status(resp);
+            await HandleWarnings(resp);
+            await HandleSensor1Status(resp);
+            HandleStatusWaiting();
         }
 
-        private void HandleCardEmptySensorStatus(ApStatusEnum resp)
+        private void HandleStatusWaiting()
         {
-            if (resp.HasFlag(ApStatusEnum.CardEmptySensorStatus))
+            if (Status == CardDispenserStatus.DispenserStatusWaiting)
             {
-                IsEmpty = true;
-                if (_isWaitingCardEmptySensorStatus)
-                {
-                    _isWaitingCardEmptySensorStatus = false;
-                    _taskCompletionSource.SetResult(true);
-                }
-            }
-            else
-            {
-                IsEmpty = false;
-                if (_isWaitingCardEmptySensorStatus)
-                {
-                    _isWaitingCardEmptySensorStatus = false;
-                    _taskCompletionSource.SetResult(false);
-                }
+                _taskCompletionSource.SetResult(true);
+                Status = CardDispenserStatus.Idle;
             }
         }
 
         private bool _prevCardPreEmpty;
 
-        private void HandleWarnings(ApStatusEnum resp)
+        private async Task HandleWarnings(ApStatusEnum resp)
         {
             if (resp.HasFlag(ApStatusEnum.CardPreEmpty))
             {
@@ -227,7 +252,12 @@ namespace CardDispenserServiceNs
             if (resp.HasFlag(ApStatusEnum.CardCaptureError))
             {
                 OnWarning(ApStatusEnum.CardCaptureError.ToString());
-                Reset();
+                if(Status == CardDispenserStatus.CapturingToRead)
+                {
+                    await Reset();
+                    Status = CardDispenserStatus.Idle;
+                    _taskCompletionSource.SetResult(false);
+                }
             }
         }
 
@@ -249,7 +279,11 @@ namespace CardDispenserServiceNs
             {
                 OnError(ApStatusEnum.ErrorCardBinIsFull);
             }
-            if(resp.HasFlag(ApStatusEnum.CardDispenseError))
+            if (resp.HasFlag(ApStatusEnum.CardEmptySensorStatus))
+            {
+                OnError(ApStatusEnum.CardEmptySensorStatus);
+            }
+            if (resp.HasFlag(ApStatusEnum.CardDispenseError))
             {
                 OnError(ApStatusEnum.CardDispenseError);
             }
@@ -270,7 +304,6 @@ namespace CardDispenserServiceNs
         private void OnError(ApStatusEnum status)
         {
             _log.Error(status.ToString());
-            Status = CardDispenserStatus.Error;
             if (!_errorsFlags.Contains(status))
             {
                 _errorsFlags.Add(status);
@@ -287,53 +320,7 @@ namespace CardDispenserServiceNs
         public void Send(Command command)
         {
             _port.Write(command.Bytes, 0, command.Bytes.Length);
-        }
-
-        public async Task Start(CardDispenserSettings settings)
-        {
-            _settings = settings;
-            await Reset();
-            await GetStatus();
-            //ProhibitCart();
-            if(IsEmpty)
-            {
-                OnError(ApStatusEnum.CardEmptySensorStatus);
-            }
-            else
-            {
-                Status = CardDispenserStatus.Idle;
-            }
-        }
-
-        public async Task Reset()
-        {
-            SendAndLog(new ResetMessage());
-            await Task.Delay(1000);
-        }
-
-        public async Task<bool> SpitCard()
-        {
-            await GetStatus();
-            if (CardAtReadingPosition)
-            {
-                SendAndLog(new DispenseCartToSpitPosCommand());
-            }
-            return true;
-        }
-
-        private async Task GetStatus()
-        {
-            _isWaitingCardEmptySensorStatus = true;
-            SendAndLog(new HighClassStatusCheckingCommand());
-            var checker = new TimeoutChecker(_settings.ResponseTimeout);
-            while (_isWaitingCardEmptySensorStatus)
-            {
-                if (checker.Check())
-                    throw new TimeoutException("CardDispenser does not respond!");
-
-                await Task.Delay(100);
-            }
-        }
+        }        
 
         public async void MainLoop()
         {
@@ -347,6 +334,7 @@ namespace CardDispenserServiceNs
                 catch (Exception e)
                 {
                     _log.Error(e);
+                    State = State.NoConnect;
                     await Task.Delay(5000);
                 }
             }
@@ -361,7 +349,7 @@ namespace CardDispenserServiceNs
             }
             else if (State == State.WaitingCommand)
             {
-                if (Command == null)
+                if(Command == null)
                     Command = new HighClassStatusCheckingCommand();
 
                 SendAndLog(Command);
@@ -386,28 +374,11 @@ namespace CardDispenserServiceNs
             }
             else if (State == State.WaitingStatus)
             {
-                var isStatus = ReadStatus();
+                var isStatus = await ReadStatus();
                 if (isStatus)
                 {
-                    await HandleCommands();
                     State = State.WaitingCommand;
                 }
-            }
-        }
-
-        private async Task HandleCommands()
-        {
-            if (Status == CardDispenserStatus.TakeCardWaiting)
-            {
-                if ((DateTime.Now - _startTakeCardTime).TotalMilliseconds > 15000)
-                {
-                    _startTakeCardTime = DateTime.MaxValue;
-                    await CaptureToError();
-                }
-            }
-            else if (Status == CardDispenserStatus.DispensingToExit)
-            {
-                await ProhibitCapture();
             }
         }
 
@@ -417,11 +388,12 @@ namespace CardDispenserServiceNs
             await Task.Delay(100);
             _port.ReadByte();
             WriteEnq();
-            await Task.Delay(100);
+            await Task.Delay(1000);
             SendAndLog(new CaptureCardCommand());
             await Task.Delay(100);
             _port.ReadByte();
             WriteEnq();
+            await Task.Delay(1000);
             await ProhibitCapture();
         }
 
@@ -432,8 +404,16 @@ namespace CardDispenserServiceNs
             _port.ReadByte();
             WriteEnq();
             await Task.Delay(100);
-            Status = CardDispenserStatus.Idle;
-            _taskCompletionSource.SetResult(true);
+        }
+
+        private async Task Reset()
+        {
+            SendAndLog(new ResetCommand());
+            await Task.Delay(100);
+            _port.ReadByte();
+            WriteEnq();
+            await Task.Delay(1000);
+            await ProhibitCapture();
         }
 
         private static void WriteEnq()
@@ -441,13 +421,13 @@ namespace CardDispenserServiceNs
             _port.Write(new[] {Command.Enq}, 0, 1);
         }
 
-        private bool ReadStatus()
+        private async Task<bool> ReadStatus()
         {
             var bytesToRead = _port.BytesToRead;
             if (bytesToRead == 9)
             {
                 var message = _port.ReadExisting();
-                HandleResponse(message);
+                await HandleResponse(message);
                 return true;
             }
 

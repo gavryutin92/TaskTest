@@ -12,15 +12,13 @@ namespace CardDispenserServiceNs
 {
     public enum CardDispenserStatus
     {
-        Off,
         Idle,
-        Error,
         DispensingToRead,
         DispensingToExit,
         CapturingToRead,
-        CapturingToError,
         TakeCardWaiting,
         ReadCardWaiting,
+        DispenserStatusWaiting
     }
 
     public interface ICardDispenserService
@@ -37,10 +35,6 @@ namespace CardDispenserServiceNs
         event EventHandler<MessageHasComeEventArgs> MessageHasCome;
         event Action<object> ExceptionHasOut;
         event Action<object, Exception> ExceptionHasCome;
-        /// <summary>
-        /// Запретить прием карт
-        /// </summary>
-        void ProhibitCart();
         /// <summary>
         /// Выдвинуть карту на позицию ридера
         /// </summary>
@@ -62,7 +56,7 @@ namespace CardDispenserServiceNs
         /// </summary>
         Task<bool> SpitCard();
         /// <summary>
-        /// Прерывает выполнение операции
+        /// Прерывает выполнение операции CaptureCardToRead
         /// </summary>
         void Abort();
     }
