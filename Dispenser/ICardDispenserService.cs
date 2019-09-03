@@ -24,18 +24,17 @@ namespace Dispenser
 
     public interface ICardDispenserService
     {
-        Task Reset();
-        Task Start(CardDispenserSettings settings);
+        void Start(CardDispenserSettings settings);
         CardDispenserStatus Status { get; }
-        bool IsEmpty { get; }
 
-        /// <summary>
-        /// Возникает при изменении статуса
-        /// </summary>
-        event Action<CardDispenserStatus> StatusChanged;
         event EventHandler<MessageHasComeEventArgs> MessageHasCome;
         event Action<object> ExceptionHasOut;
         event Action<object, Exception> ExceptionHasCome;
+        /// <summary>
+        /// Взять прочитать статус диспенсера
+        /// </summary>
+        /// <returns></returns>
+        Task<bool> GetStatus();
         /// <summary>
         /// Выдвинуть карту на позицию ридера
         /// </summary>
@@ -49,16 +48,12 @@ namespace Dispenser
         /// </summary>
         Task<bool> CaptureCardToRead();
         /// <summary>
-        /// Втянуть карту в сброс
-        /// </summary>
-        Task<bool> CaptureCardToError();
-        /// <summary>
         /// Выплюнуть карту
         /// </summary>
         Task<bool> SpitCard();
         /// <summary>
         /// Прерывает выполнение операции CaptureCardToRead
         /// </summary>
-        void Abort();
+        void CancelCapture();
     }
 }

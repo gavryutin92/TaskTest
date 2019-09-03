@@ -1,33 +1,44 @@
-﻿using CardDispenserServiceNs.Protocol;
+﻿using Dispenser.Events;
+using Dispenser.Protocol;
 using NLog;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO.Ports;
-using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using CardDispenserServiceNs.Events;
 
-namespace CardDispenserServiceNs
+namespace Dispenser
 {
     public enum State
     {
         NoConnect,
-        WaitAskNak,
-        Connected,
-        CheckingStatus,
         WaitingAsk,
         WaitingCommand,
         WaitingStatus
     }
 
-    public class CardDispenserService //: ICardDispenserService
+    public class CardDispenserService : ICardDispenserService
     {
         private Command _command;
-        private object _lockObj = new object();
 
+        private static readonly Logger _log = LogManager.GetCurrentClassLogger();
+
+        private static SerialPort _port;
+        private bool _isException;
+        
+
+        private TaskCompletionSource<bool> _taskCompletionSource;
+        private DateTime _startTakeCardTime = DateTime.MaxValue;
+
+        private readonly List<ApStatusEnum> _errorsFlags = new List<ApStatusEnum>();
+
+        public event EventHandler<MessageHasComeEventArgs> MessageHasCome;
+        public event Action<object> ExceptionHasOut;
+        public event Action<object, Exception> ExceptionHasCome;
+
+        private CardDispenserSettings _settings;
+
+        public bool CardAtReadingPosition { get; private set; }
         public Command Command
         {
             get => _command;
@@ -35,44 +46,12 @@ namespace CardDispenserServiceNs
         }
 
         public State State { get; set; }
-
-        public CardDispenserStatus StatusPrev { get; private set; }
-
-        private CardDispenserStatus _status;
-        public CardDispenserStatus Status
+        public CardDispenserStatus Status { get; set; }
+        public void Start(CardDispenserSettings settings)
         {
-            get => _status;
-            set
-            {
-                StatusPrev = _status;
-                _status = value;
-                StatusChanged?.Invoke(Status);
-            }
+            _settings = settings;
+            Task.Run(() => MainLoop());
         }
-
-        private static readonly Logger _log = LogManager.GetCurrentClassLogger();
-
-        private static SerialPort _port;
-        private bool _isConnected;
-        private bool _isException;
-
-        private volatile bool _isWaitingFull;
-        private volatile bool _isWaitingEmpty;
-        private volatile bool _isAborted = false;
-        public bool CardAtReadingPosition { get; private set; }
-
-        private TaskCompletionSource<bool> _taskCompletionSource;
-        private DateTime _startTakeCardTime = DateTime.MaxValue;
-
-        public event Action<CardDispenserStatus> StatusChanged;
-        public event EventHandler<MessageHasComeEventArgs> MessageHasCome;
-        public event Action<object> ExceptionHasOut;
-        public event Action<object, Exception> ExceptionHasCome;
-
-        private CardDispenserSettings _settings;
-
-
-        public bool IsEmpty { get; private set; }
 
         public CardDispenserService()
         {
@@ -160,25 +139,26 @@ namespace CardDispenserServiceNs
             return _taskCompletionSource.Task;
         }
 
-        public void Connect()
+        private void Connect()
         {
             _port?.Dispose();
-            //_port = new SerialPort(_settings.Name);
-            //_port.BaudRate = _settings.BaudRate;
-            //_port.Parity = _settings.Parity;
-            //_port.DataBits = _settings.DataBits;
-            //_port.StopBits = _settings.StopBits;
-            //_port.ReadTimeout = _settings.ReadWriteTimeout;
-            //_port.WriteTimeout = _settings.ReadWriteTimeout;
-            _port = new SerialPort("COM8");
-            _port.BaudRate = 9600;
-            _port.Parity = Parity.None;
-            _port.DataBits = 8;
-            _port.StopBits = StopBits.One;
-            _port.ReadTimeout = 500;
-            _port.WriteTimeout = 500;
-            _port.DtrEnable = true;
-            _port.RtsEnable = true;
+
+            _port = new SerialPort(_settings.Name);
+            _port.BaudRate = _settings.BaudRate;
+            _port.Parity = _settings.Parity;
+            _port.DataBits = _settings.DataBits;
+            _port.StopBits = _settings.StopBits;
+            _port.ReadTimeout = _settings.ReadWriteTimeout;
+            _port.WriteTimeout = _settings.ReadWriteTimeout;
+
+            //_port = new SerialPort("COM8");
+            //_port.BaudRate = 9600;
+            //_port.Parity = Parity.None;
+            //_port.DataBits = 8;
+            //_port.StopBits = StopBits.One;
+            //_port.ReadTimeout = 500;
+            //_port.WriteTimeout = 500;
+
             _port.Open();
         }
 
@@ -231,7 +211,7 @@ namespace CardDispenserServiceNs
         private async Task HandleResponse(string mes)
         {
             var resp = ApResponse.Parse(mes);
-            HandleErrors(resp);
+            await HandleErrors(resp);
             await HandleWarnings(resp);
             await HandleSensor1Status(resp);
             HandleStatusWaiting();
@@ -280,8 +260,6 @@ namespace CardDispenserServiceNs
             _log.Warn(warning);
             MessageHasCome?.Invoke(this, new MessageHasComeEventArgs(MessageType.Warn, warning));
         }
-
-        private List<ApStatusEnum> _errorsFlags = new List<ApStatusEnum>();
 
         private async Task HandleErrors(ApStatusEnum resp)
         {
@@ -426,6 +404,7 @@ namespace CardDispenserServiceNs
 
         private async Task Reset()
         {
+            _errorsFlags.Clear();
             SendAndLog(new ResetCommand());
             await Task.Delay(100);
             _port.ReadByte();

@@ -3,7 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Dispenser;
 
-namespace TaskTest
+namespace Dispenser
 {
     class Program
     {
