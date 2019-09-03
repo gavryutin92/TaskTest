@@ -5,7 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace CardDispenserServiceNs.Protocol
+namespace Dispenser.Protocol
 {
     [Flags]
     public enum RfStatusEnum

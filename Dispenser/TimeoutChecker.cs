@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace CardDispenserServiceNs
+namespace Dispenser
 {
     public class TimeoutChecker
     {

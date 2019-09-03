@@ -1,4 +1,4 @@
-﻿using CardDispenserServiceNs.Protocol;
+﻿using Dispenser.Protocol;
 using NLog;
 using System;
 using System.Collections.Generic;
@@ -6,9 +6,9 @@ using System.IO.Ports;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using CardDispenserServiceNs.Events;
+using Dispenser.Events;
 
-namespace CardDispenserServiceNs
+namespace Dispenser
 {
     public enum CardDispenserStatus
     {

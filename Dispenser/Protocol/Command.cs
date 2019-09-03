@@ -1,6 +1,6 @@
 ﻿using System.Text;
 
-namespace CardDispenserServiceNs.Protocol
+namespace Dispenser.Protocol
 {
     public class Command
     {

@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace CardDispenserServiceNs.Events
+namespace Dispenser.Events
 {
     public enum MessageType
     {
