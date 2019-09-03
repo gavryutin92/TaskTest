@@ -20,23 +20,17 @@ namespace Dispenser
     public class CardDispenserService : ICardDispenserService
     {
         private Command _command;
-
         private static readonly Logger _log = LogManager.GetCurrentClassLogger();
-
         private static SerialPort _port;
         private bool _isException;
-        
-
+        private CardDispenserSettings _settings;
         private TaskCompletionSource<bool> _taskCompletionSource;
         private DateTime _startTakeCardTime = DateTime.MaxValue;
-
         private readonly List<ApStatusEnum> _errorsFlags = new List<ApStatusEnum>();
 
         public event EventHandler<MessageHasComeEventArgs> MessageHasCome;
         public event Action<object> ExceptionHasOut;
         public event Action<object, Exception> ExceptionHasCome;
-
-        private CardDispenserSettings _settings;
 
         public bool CardAtReadingPosition { get; private set; }
         public Command Command
@@ -180,7 +174,7 @@ namespace Dispenser
                 }
                 else if(Status == CardDispenserStatus.TakeCardWaiting)
                 {
-                    if ((DateTime.Now - _startTakeCardTime).TotalMilliseconds > 15000)
+                    if ((DateTime.Now - _startTakeCardTime).TotalMilliseconds > _settings.WaitingTakeTime)
                     {
                         _startTakeCardTime = DateTime.MaxValue;
                         await CaptureToError();
